@@ -1,0 +1,29 @@
+# Project configuration
+data:
+  download_url: "https://archive.ics.uci.edu/ml/machine-learning-databases/00235/household_power_consumption.zip"
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  filename_txt: "household_power_consumption.txt"
+  resample_rule: "5T"   # 1T for 1-min, 5T for 5-min aggregation
+  numeric_features: ["Global_active_power","Global_reactive_power","Voltage","Global_intensity","Sub_metering_1","Sub_metering_2","Sub_metering_3"]
+  target_feature: "Global_active_power"  # not used for training; reference
+preprocess:
+  fillna_method: "ffill"  # options: "ffill", "bfill", "drop"
+  dropna_after_fill: true
+  standardize: true
+  train_end: "2009-12-31"  # inclusive boundary for training period
+model:
+  seq_len: 60              # number of time steps per sequence (e.g., 60*5min = 5 hours)
+  lstm_units: 64
+  latent_dim: 32
+  dropout: 0.1
+  l2: 0.0
+train:
+  epochs: 20
+  batch_size: 256
+  learning_rate: 0.001
+  patience: 3
+threshold:
+  method: "quantile"
+  quantile: 0.995     # 99.5th percentile of train reconstruction error
+  mad_scale: 3.5      # used if method == "mad"

@@ -8,4 +8,8 @@ __pycache__/
 *.pywz
 *.pyzw
 *.pyzwz
+/venv
+energy-anomaly/venv
+dog-pig-loaf-of-bread/venv
 
+energy-anomaly/data
