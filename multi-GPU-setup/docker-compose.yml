@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  multi-gpu-ml:
+    build: .
+    container_name: multi-gpu-ml
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0,1
+    volumes:
+      # Mount your local workspace for development
+      - .:/workspace
+      # Mount a data directory if you have datasets
+      - ./data:/workspace/data
+      # Mount your home directory for persistent configs
+      - ~/.cache:/home/dockeruser/.cache
+    ports:
+      - "8888:8888"  # Jupyter
+      - "6006:6006"  # TensorBoard
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    working_dir: /workspace
+    command: bash -c "python test_gpus.py && bash"
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Optional: Jupyter service
+  jupyter:
+    build: .
+    container_name: multi-gpu-jupyter
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0,1
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data
+      - ~/.cache:/home/dockeruser/.cache
+    ports:
+      - "8889:8888"
+    working_dir: /workspace
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+    restart: unless-stopped
