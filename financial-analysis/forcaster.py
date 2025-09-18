@@ -15,6 +15,10 @@ from torch.utils.data import TensorDataset, DataLoader
 # bring in your feature pipeline (from the earlier script)
 from data_preprocess import execute as build_features  # adjust path/module if needed
 
+# Remove Warnings
+import warnings
+warnings.filterwarnings("ignore", message=".*NCCL.*")
+
 
 # ---------------------------
 # Data & feature utilities
@@ -114,7 +118,7 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler):
         yb = yb.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast("cuda", enabled=True):
             logits = model(xb)
             loss = criterion(logits, yb)
 
@@ -289,16 +293,94 @@ def run_forecast(
     print(f"- Inputs: {len(feature_names)} features, Targets: {len(target_names)} labels")
 
 
-# -----------------------------
-# CLI entrypoint example
-# -----------------------------
-if __name__ == "__main__":
+import re
+
+def _strip_module_prefix(state_dict):
+    """Remove 'module.' prefix from DataParallel checkpoints if present."""
+    return {re.sub(r'^module\.', '', k): v for k, v in state_dict.items()}
+
+@torch.no_grad()
+def predict_latest(
+    ticker: str,
+    amount_of_days: int,
+    frequency: str = "1d",
+    add_day_of_week: bool = True,
+    per_gpu_batch_size: int = 1024,
+    hidden_units: Optional[List[int]] = None,
+    dropout: float = 0.25,
+    threshold: float = 0.5
+):
+    """
+    Loads artifacts (scaler + model) and predicts the 8-label outcomes
+    for the LAST available row in the engineered dataframe.
+    Returns: (probs_dict, preds_dict, feature_row_index)
+    """
+    if hidden_units is None:
+        hidden_units = [1024, 512, 256, 128]
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    # 1) Rebuild engineered data to know the correct columns
+    df = load_feature_data(ticker, amount_of_days, frequency, add_day_of_week=add_day_of_week)
+    X_df, Y_df = select_features_and_targets(df)  # Y_df just for label names
+    feature_names = list(X_df.columns)
+    target_names = list(Y_df.columns)
+
+    # Keep only rows with valid features (as training did)
+    X_valid = X_df.dropna().copy()
+    if X_valid.empty:
+        raise RuntimeError("No valid (non-NaN) feature rows available for prediction.")
+    last_idx = X_valid.index[-1]
+    x_row = X_valid.loc[last_idx:last_idx].values.astype(np.float32)  # shape (1, D)
+
+    # 2) Load scaler
+    scaler_path = os.path.join("cache", f"{ticker}_{amount_of_days}_{frequency}_scaler.pkl")
+    if not os.path.exists(scaler_path):
+        raise FileNotFoundError(f"Scaler not found at {scaler_path}. Train first.")
+    with open(scaler_path, "rb") as f:
+        scaler: StandardScaler = pickle.load(f)
+
+    x_row_std = scaler.transform(x_row)
+
+    # 3) Load model
+    model_path = os.path.join("cache", f"{ticker}_{amount_of_days}_{frequency}_multilabel.pt")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model not found at {model_path}. Train first.")
+
+    model = MLP(
+        input_dim=x_row_std.shape[1],
+        output_dim=len(target_names),
+        hidden=hidden_units,
+        dropout=dropout
+    ).to(device)
+
+    state = torch.load(model_path, map_location=device)
+    state = _strip_module_prefix(state)
+    model.load_state_dict(state)
+    model.eval()
+
+    # 4) Predict (AMP, new API)
+    xb = torch.from_numpy(x_row_std).to(device)
+    with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+        logits = model(xb)
+        probs = torch.sigmoid(logits).float().cpu().numpy()[0]  # shape (8,)
+
+    preds = (probs >= threshold).astype(int)
+
+    probs_dict = {name: float(p) for name, p in zip(target_names, probs)}
+    preds_dict = {name: int(v) for name, v in zip(target_names, preds)}
+
+    return probs_dict, preds_dict, int(last_idx)
+
+
+def execute_prediction(ticker, amount_of_days: int, frequency: str = "1d"):
+    # forcast models
     run_forecast(
-        ticker="SPY",
-        amount_of_days=5000,
-        frequency="1d",
+        ticker=ticker,
+        amount_of_days=amount_of_days,
+        frequency=frequency,
         add_day_of_week=True,
-        epochs=250,
+        epochs=2,
         per_gpu_batch_size=1024,     # scaled by number of GPUs detected
         hidden_units=[1024, 512, 256, 128],
         dropout=0.25,
@@ -306,3 +388,34 @@ if __name__ == "__main__":
         weight_decay=1e-5,
         num_workers=os.cpu_count() // 2 if os.cpu_count() else 0
     )
+    # Predict
+    probs, preds, idx = predict_latest(
+        ticker=ticker,
+        amount_of_days=amount_of_days,
+        frequency=frequency,
+        add_day_of_week=True,
+        hidden_units=[1024, 512, 256, 128],
+        dropout=0.25,
+        threshold=0.5
+    )
+
+    print(f"\nPredictions for last row index {idx}:")
+    print("Probabilities:")
+    for k, v in probs.items():
+        print(f"  {k}: {v:.4f}")
+    print("Binary (>=0.5):")
+    for k, v in preds.items():
+        print(f"  {k}: {v}")
+
+
+# -----------------------------
+# CLI entrypoint example
+# -----------------------------
+if __name__ == "__main__":
+    ticker = "SPY"
+    amount_of_days = 5000
+    frequency = '1d'
+
+    execute_prediction(ticker, amount_of_days, frequency)
+
+
