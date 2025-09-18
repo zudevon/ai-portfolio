@@ -11,6 +11,7 @@ from sklearn.metrics import classification_report, roc_auc_score
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
+from torch import amp
 
 # bring in your feature pipeline (from the earlier script)
 from data_preprocess import execute as build_features  # adjust path/module if needed
@@ -118,7 +119,7 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler):
         yb = yb.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.amp.autocast("cuda", enabled=True):
+        with amp.autocast("cuda", enabled=torch.cuda.is_available()):
             logits = model(xb)
             loss = criterion(logits, yb)
 
@@ -243,7 +244,7 @@ def run_forecast(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # AMP
-    grad_scaler = torch.cuda.amp.GradScaler(enabled=has_cuda)
+    grad_scaler = amp.GradScaler("cuda", enabled=torch.cuda.is_available())
 
     # Training loop with early stopping on val AUROC
     history = {"train_loss": [], "val_loss": [], "val_auc": []}
@@ -361,7 +362,7 @@ def predict_latest(
 
     # 4) Predict (AMP, new API)
     xb = torch.from_numpy(x_row_std).to(device)
-    with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+    with amp.autocast("cuda", enabled=torch.cuda.is_available()):
         logits = model(xb)
         probs = torch.sigmoid(logits).float().cpu().numpy()[0]  # shape (8,)
 
@@ -380,10 +381,10 @@ def execute_prediction(ticker, amount_of_days: int, frequency: str = "1d"):
         amount_of_days=amount_of_days,
         frequency=frequency,
         add_day_of_week=True,
-        epochs=2,
-        per_gpu_batch_size=1024,     # scaled by number of GPUs detected
+        epochs=120,
+        per_gpu_batch_size=512,     # scaled by number of GPUs detected
         hidden_units=[1024, 512, 256, 128],
-        dropout=0.25,
+        dropout=0.05,
         lr=1e-3,
         weight_decay=1e-5,
         num_workers=os.cpu_count() // 2 if os.cpu_count() else 0
@@ -396,7 +397,7 @@ def execute_prediction(ticker, amount_of_days: int, frequency: str = "1d"):
         add_day_of_week=True,
         hidden_units=[1024, 512, 256, 128],
         dropout=0.25,
-        threshold=0.5
+        threshold=0.80
     )
 
     print(f"\nPredictions for last row index {idx}:")
@@ -413,7 +414,7 @@ def execute_prediction(ticker, amount_of_days: int, frequency: str = "1d"):
 # -----------------------------
 if __name__ == "__main__":
     ticker = "SPY"
-    amount_of_days = 5000
+    amount_of_days = 50000
     frequency = '1d'
 
     execute_prediction(ticker, amount_of_days, frequency)
