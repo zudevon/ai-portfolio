@@ -13,3 +13,5 @@ energy-anomaly/venv
 dog-pig-loaf-of-bread/venv
 
 energy-anomaly/data
+financial-analysis/cache
+financial-analysis/processed
